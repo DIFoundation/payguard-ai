@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { usePayGuardWallet } from "@/hooks/usePayGuardWallet";
 import {
   buildPaymentRequestTypedData,
+  requireSettlementAddress,
   encodeSignedRequest,
   generateNonce,
 } from "@/lib/signatures/paymentRequest";
@@ -75,13 +76,14 @@ export function RequestCreator() {
       expiresAt: expiresAt.toString(),
       nonce,
     };
-    const typed = buildPaymentRequestTypedData(data);
     try {
+      const verifyingContract = requireSettlementAddress();
+      const typed = buildPaymentRequestTypedData(data, verifyingContract);
       const signature = await signTypedDataAsync({
         ...typed,
         account: wallet.address,
       });
-      setSigned({ ...data, signature, signer: wallet.address! });
+      setSigned({ ...data, verifyingContract, signature, signer: wallet.address! });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Signing was rejected or failed.");
     }

@@ -26,7 +26,7 @@ const STEPS = [
   {
     icon: <Radar className="h-5 w-5" />,
     title: "Risk engine explains",
-    body: "A deterministic ruleset produces an explainable risk report — no black-box AI deciding for you.",
+    body: "A deterministic ruleset produces an explainable risk report: no black-box AI deciding for you.",
   },
   {
     icon: <Wallet className="h-5 w-5" />,
@@ -51,7 +51,7 @@ export default function LandingPage() {
           </h1>
           <p className="mt-5 max-w-2xl text-lg text-slate-400">
             PayGuard AI protects stablecoin payments on {QDAY.name}. Cryptographically verify the
-            recipient, prove the payment request is untampered, understand the risks — then pay
+            recipient, prove the payment request is untampered, understand the risks - then pay
             {" "}{TUSD8.symbol} with confidence.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -96,7 +96,7 @@ export default function LandingPage() {
             <p className="mt-4 text-slate-400">
               Recipients sign payment requests with EIP-712 typed data. The signature binds the
               wallet, amount, token, chain, reference, purpose, expiry, and a unique nonce. If
-              anyone changes a single protected field — recipient, amount, token, or chain —
+              anyone changes a single protected field - recipient, amount, token, or chain -
               verification fails immediately.
             </p>
             <p className="mt-3 text-slate-400">
@@ -125,7 +125,7 @@ export default function LandingPage() {
         <h2 className="text-3xl font-bold text-white">See it in action</h2>
         <p className="mx-auto mt-3 max-w-xl text-slate-400">
           A merchant signs a request. A customer verifies it, reviews the risk report, and settles
-          {" "}{TUSD8.symbol} on {QDAY.name}. Then try the tampered version — PayGuard catches it.
+          {" "}{TUSD8.symbol} on {QDAY.name}. Then try the tampered version - PayGuard catches it.
         </p>
         <div className="mt-8 flex justify-center gap-3">
           <Link href="/request"><Button size="lg" variant="secondary">Create a request</Button></Link>

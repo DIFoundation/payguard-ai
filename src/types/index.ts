@@ -54,11 +54,16 @@ export interface PaymentRequestData {
   purpose: string;
   /** Unix seconds. */
   expiresAt: string;
-  /** Unique nonce, hex bytes32 or arbitrary string. */
+  /** Unique single-use nonce: 0x-prefixed 32-byte hex (the contract's bytes32). */
   nonce: string;
 }
 
 export interface SignedPaymentRequest extends PaymentRequestData {
+  /**
+   * The PayGuardSettlement contract this request was signed for (EIP-712 `verifyingContract`).
+   * A signature is only valid for this contract on this chain.
+   */
+  verifyingContract: `0x${string}`;
   /** EIP-712 signature (0x-prefixed 65-byte hex). */
   signature: `0x${string}`;
   /** The address that produced the signature. */

@@ -18,11 +18,7 @@ contract PayGuardRegistry {
     mapping(address => Recipient) private _recipients;
 
     /// @notice Emitted when a wallet registers itself as a PayGuard recipient.
-    event RecipientRegistered(
-        address indexed wallet,
-        bytes32 indexed profileHash,
-        uint256 registeredAt
-    );
+    event RecipientRegistered(address indexed wallet, bytes32 indexed profileHash, uint256 registeredAt);
 
     /// @notice Emitted when a wallet revokes its PayGuard registration.
     event RecipientRegistrationRevoked(address indexed wallet, uint256 revokedAt);

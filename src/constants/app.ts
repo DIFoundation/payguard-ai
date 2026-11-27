@@ -25,6 +25,10 @@ export const TUSD8 = {
 export const REGISTRY_ADDRESS = (process.env
   .NEXT_PUBLIC_PAYGUARD_REGISTRY ?? "") as `0x${string}` | "";
 
+/** PayGuardSettlement: verifies recipient-signed requests on-chain and settles them. */
+export const SETTLEMENT_ADDRESS = (process.env
+  .NEXT_PUBLIC_PAYGUARD_SETTLEMENT ?? "") as `0x${string}` | "";
+
 export function explorerTxUrl(hash: string): string {
   return `${QDAY.explorerUrl}/tx/${hash}`;
 }

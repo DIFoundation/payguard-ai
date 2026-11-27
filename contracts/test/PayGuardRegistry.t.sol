@@ -50,7 +50,7 @@ contract PayGuardRegistryTest is Test {
         registry.revokeRegistration();
 
         assertFalse(registry.isRegistered(alice));
-        (, , , bool active) = registry.getRecipient(alice);
+        (,,, bool active) = registry.getRecipient(alice);
         assertFalse(active);
     }
 
@@ -84,7 +84,7 @@ contract PayGuardRegistryTest is Test {
         registry.registerRecipient(newHash);
 
         assertTrue(registry.isRegistered(alice));
-        (, bytes32 hash, , ) = registry.getRecipient(alice);
+        (, bytes32 hash,,) = registry.getRecipient(alice);
         assertEq(hash, newHash);
     }
 }

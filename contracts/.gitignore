@@ -1,0 +1,5 @@
+# Foundry build output
+out/
+cache/
+broadcast/
+# Dependencies are installed with `forge install` (see contracts/README.md)

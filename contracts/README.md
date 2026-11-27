@@ -1,66 +1,39 @@
-## Foundry
+# PayGuard contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+| Contract | Purpose |
+|---|---|
+| `PayGuardRegistry` | Wallets self-register as PayGuard recipients (profile hash only, no PII). |
+| `PayGuardSettlement` | Settles a payment **only** against a request the recipient signed (EIP-712). Any altered field reverts. Optional agent policies: token, per-tx cap, rolling 24h cap, expiry, registered-only, instant revoke. Never holds funds, no admin. |
 
-Foundry consists of:
+## Setup
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
-
-```shell
-$ forge build
+```bash
+cd contracts
+forge install OpenZeppelin/openzeppelin-contracts@v5.1.0   # tested version
+forge install foundry-rs/forge-std                          # if lib/forge-std is missing
+forge build
+forge test -vv
 ```
 
-### Test
+`remappings.txt` and `foundry.toml` (solc 0.8.28, EVM `paris`) are already configured.
 
-```shell
-$ forge test
+## Deploy (Aevum testnet)
+
+```bash
+export PRIVATE_KEY=0x...   # throwaway testnet key
+forge script script/DeployPayGuard.s.sol --rpc-url https://rpc-test.qday.info --broadcast
 ```
 
-### Format
+Put the printed addresses in `.env.local` as `NEXT_PUBLIC_PAYGUARD_REGISTRY` and
+`NEXT_PUBLIC_PAYGUARD_SETTLEMENT`, then refresh the frontend ABI:
 
-```shell
-$ forge fmt
+```bash
+forge build && cd .. && node scripts/export-abi.mjs
 ```
 
-### Gas Snapshots
+## Signed-message compatibility
 
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+`PayGuardSettlement` and `src/lib/signatures/paymentRequest.ts` must agree on the EIP-712
+domain (`PayGuard`, `1`, chainId, verifyingContract) and the `PaymentRequest` type string.
+`test_DigestMatchesFrontendVector` (Foundry) and "matches the Solidity vector" (Vitest) pin both
+to one digest. If you edit either side, both tests will fail until they match again.

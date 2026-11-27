@@ -6,10 +6,11 @@ import { isAddress, type Address } from "viem";
 import {
   decodeSignedRequest,
   recoverPaymentRequestSigner,
+  isConfiguredSettlement,
 } from "@/lib/signatures/paymentRequest";
 import { evaluateRisk } from "@/lib/risk-engine/engine";
 import { registryAbi } from "@/lib/blockchain/wagmi";
-import { REGISTRY_ADDRESS, QDAY, TUSD8 } from "@/constants/app";
+import { REGISTRY_ADDRESS, SETTLEMENT_ADDRESS, QDAY, TUSD8 } from "@/constants/app";
 import type {
   RiskAssessment,
   SignedPaymentRequest,
@@ -125,9 +126,18 @@ export function useVerification(input: VerificationInput): VerificationResult {
       expiresAt: request.expiresAt,
       nonce: request.nonce,
     };
-    recoverPaymentRequestSigner(data, request.signature as `0x${string}`)
+    // A request signed for a different settlement contract can never be settled here,
+    // so it fails verification even though the signature itself may be well-formed.
+    const foreignContract =
+      !!SETTLEMENT_ADDRESS && !isConfiguredSettlement(request.verifyingContract);
+    recoverPaymentRequestSigner(
+      data,
+      request.signature as `0x${string}`,
+      request.verifyingContract as Address,
+    )
       .then((signer) => {
-        if (!cancelled) setSigState({ key, signer, valid: !!signer });
+        if (!cancelled)
+          setSigState({ key, signer, valid: !!signer && !foreignContract });
       })
       .catch(() => {
         if (!cancelled) setSigState({ key, signer: null, valid: false });
@@ -249,6 +259,7 @@ export function useVerification(input: VerificationInput): VerificationResult {
                 purpose: request.purpose,
                 expiresAt: request.expiresAt,
                 nonce: request.nonce,
+                verifyingContract: request.verifyingContract as Address,
                 signature: request.signature as `0x${string}`,
                 signer: (signer ?? request.signer) as Address,
               }

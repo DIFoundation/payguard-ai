@@ -1,12 +1,18 @@
 import {
   hashTypedData,
+  isAddress,
   recoverTypedDataAddress,
   type Address,
   type Hex,
 } from "viem";
-import { QDAY, TUSD8 } from "@/constants/app";
+import { QDAY, SETTLEMENT_ADDRESS, TUSD8 } from "@/constants/app";
 import type { PaymentRequestData, SignedPaymentRequest } from "@/types";
 
+/**
+ * MUST match contracts/src/PayGuardSettlement.sol (EIP712("PayGuard", "1") and REQUEST_TYPEHASH).
+ * The Foundry test `test_DigestMatchesFrontendVector` and the vitest "matches the Solidity vector"
+ * pin both implementations to the same digest.
+ */
 export const PAYMENT_REQUEST_DOMAIN_NAME = "PayGuard";
 export const PAYMENT_REQUEST_DOMAIN_VERSION = "1";
 
@@ -24,18 +30,51 @@ export const PAYMENT_REQUEST_TYPES = {
   ],
 } as const;
 
-export function paymentRequestDomain(chainId: number = QDAY.chainId) {
+export class SettlementNotConfiguredError extends Error {
+  constructor() {
+    super(
+      "PayGuardSettlement address is not configured. Set NEXT_PUBLIC_PAYGUARD_SETTLEMENT.",
+    );
+    this.name = "SettlementNotConfiguredError";
+  }
+}
+
+/** The configured settlement contract, or throws if missing/invalid. */
+export function requireSettlementAddress(): Address {
+  if (!SETTLEMENT_ADDRESS || !isAddress(SETTLEMENT_ADDRESS)) {
+    throw new SettlementNotConfiguredError();
+  }
+  return SETTLEMENT_ADDRESS;
+}
+
+/** True when `a` is the configured settlement contract (case-insensitive). */
+export function isConfiguredSettlement(a: string | undefined | null): boolean {
+  return (
+    !!a &&
+    !!SETTLEMENT_ADDRESS &&
+    a.toLowerCase() === SETTLEMENT_ADDRESS.toLowerCase()
+  );
+}
+
+export function paymentRequestDomain(
+  chainId: number = QDAY.chainId,
+  verifyingContract: Address = requireSettlementAddress(),
+) {
   return {
     name: PAYMENT_REQUEST_DOMAIN_NAME,
     version: PAYMENT_REQUEST_DOMAIN_VERSION,
     chainId,
+    verifyingContract,
   } as const;
 }
 
 /** Build the EIP-712 typed-data payload for a payment request. */
-export function buildPaymentRequestTypedData(data: PaymentRequestData) {
+export function buildPaymentRequestTypedData(
+  data: PaymentRequestData,
+  verifyingContract: Address = requireSettlementAddress(),
+) {
   return {
-    domain: paymentRequestDomain(data.chainId),
+    domain: paymentRequestDomain(data.chainId, verifyingContract),
     types: PAYMENT_REQUEST_TYPES,
     primaryType: "PaymentRequest" as const,
     message: {
@@ -53,8 +92,11 @@ export function buildPaymentRequestTypedData(data: PaymentRequestData) {
 }
 
 /** Deterministic digest of a payment request (no signature needed). */
-export function paymentRequestDigest(data: PaymentRequestData): Hex {
-  return hashTypedData(buildPaymentRequestTypedData(data));
+export function paymentRequestDigest(
+  data: PaymentRequestData,
+  verifyingContract: Address = requireSettlementAddress(),
+): Hex {
+  return hashTypedData(buildPaymentRequestTypedData(data, verifyingContract));
 }
 
 /**
@@ -64,10 +106,11 @@ export function paymentRequestDigest(data: PaymentRequestData): Hex {
 export async function recoverPaymentRequestSigner(
   data: PaymentRequestData,
   signature: Hex,
+  verifyingContract: Address = requireSettlementAddress(),
 ): Promise<Address | null> {
   try {
     return await recoverTypedDataAddress({
-      ...buildPaymentRequestTypedData(data),
+      ...buildPaymentRequestTypedData(data, verifyingContract),
       signature,
     });
   } catch {
@@ -77,31 +120,49 @@ export async function recoverPaymentRequestSigner(
 
 /** Serialize a signed request to a portable JSON string (clipboard / QR safe). */
 export function encodeSignedRequest(req: SignedPaymentRequest): string {
-  return JSON.stringify({ v: 1, ...req });
+  return JSON.stringify({ v: 2, ...req });
 }
 
-/** Parse an encoded signed request. Returns null on malformed input. */
+const UINT = /^\d+$/;
+const HEX32 = /^0x[0-9a-fA-F]{64}$/;
+const HEX = /^0x[0-9a-fA-F]+$/;
+const UINT256_MAX = (1n << 256n) - 1n;
+
+/**
+ * Parse and strictly validate an encoded signed request. Returns null on malformed input,
+ * so nothing unparseable ever reaches the contract call or the signature check.
+ */
 export function decodeSignedRequest(raw: string): SignedPaymentRequest | null {
   try {
-    const parsed = JSON.parse(raw.trim());
-    if (!parsed || typeof parsed !== "object" || parsed.v !== 1) return null;
-    const required = [
-      "recipient",
-      "payer",
-      "chainId",
-      "token",
-      "amount",
-      "reference",
-      "purpose",
-      "expiresAt",
-      "nonce",
-      "signature",
-      "signer",
-    ];
-    for (const key of required) {
-      if (parsed[key] === undefined || parsed[key] === null) return null;
+    const p = JSON.parse(raw.trim());
+    if (!p || typeof p !== "object" || p.v !== 2) return null;
+
+    for (const k of ["recipient", "payer", "token", "verifyingContract", "signer"]) {
+      if (typeof p[k] !== "string" || !isAddress(p[k], { strict: false })) return null;
     }
-    return parsed as SignedPaymentRequest;
+    if (typeof p.chainId !== "number" || !Number.isSafeInteger(p.chainId) || p.chainId <= 0)
+      return null;
+    for (const k of ["amount", "expiresAt"]) {
+      if (typeof p[k] !== "string" || !UINT.test(p[k]) || BigInt(p[k]) > UINT256_MAX) return null;
+    }
+    if (typeof p.nonce !== "string" || !HEX32.test(p.nonce)) return null;
+    if (typeof p.signature !== "string" || !HEX.test(p.signature)) return null;
+    if (typeof p.reference !== "string" || typeof p.purpose !== "string") return null;
+
+    return {
+      recipient: p.recipient,
+      payer: p.payer,
+      chainId: p.chainId,
+      token: p.token,
+      amount: p.amount,
+      reference: p.reference,
+      purpose: p.purpose,
+      expiresAt: p.expiresAt,
+      nonce: p.nonce,
+      verifyingContract: p.verifyingContract,
+      signature: p.signature,
+      signer: p.signer,
+    };
   } catch {
     return null;
   }

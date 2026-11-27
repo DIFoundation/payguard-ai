@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Solidity project (incl. vendored OpenZeppelin/forge-std JS) is not linted here.
+    "contracts/**",
   ]),
 ]);
 

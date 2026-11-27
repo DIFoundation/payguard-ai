@@ -18,6 +18,7 @@ function makeRequest(overrides: Partial<SignedPaymentRequest> = {}): SignedPayme
     purpose: "Invoice",
     expiresAt: String(Math.floor(Date.now() / 1000) + 3600),
     nonce: "0x" + "ab".repeat(32),
+    verifyingContract: "0x00000000000000000000000000000000000fa11e",
     signature: `0x${"cd".repeat(65)}` as `0x${string}`,
     signer: RECIPIENT as `0x${string}`,
     ...overrides,
