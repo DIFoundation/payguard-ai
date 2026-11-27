@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { formatUnits, parseUnits } from "viem";
+import { useMemo, useState } from "react";
+import { usePublicClient, useWriteContract } from "wagmi";
+import { formatUnits, isAddress, parseEventLogs, parseUnits, type Address, type Hex } from "viem";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowRight,
@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Loader2,
   ShieldAlert,
+  ShieldCheck,
   Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,9 @@ import { useVerification } from "@/features/verification/useVerification";
 import { VerificationPanel } from "@/features/verification/VerificationPanel";
 import { RiskReport } from "@/features/risk/RiskReport";
 import { erc20Abi, TUSD8 } from "@/lib/blockchain/wagmi";
-import { QDAY, explorerTxUrl } from "@/constants/app";
+import { settlementAbi, explainSettlementError } from "@/lib/blockchain/settlement";
+import { settleSignedRequest, type SettleDeps, type SettleStage } from "@/lib/blockchain/settlePayment";
+import { QDAY, SETTLEMENT_ADDRESS, explorerTxUrl } from "@/constants/app";
 import { addPaymentRecord, updatePaymentRecord } from "@/lib/storage/local";
 
 type Stage = "compose" | "review" | "submitting" | "confirming" | "done" | "failed";
@@ -31,11 +34,12 @@ function newId() {
 
 export function NewPaymentFlow() {
   const wallet = usePayGuardWallet();
-  const { writeContract, data: txHash, error: writeError, reset: resetWrite } = useWriteContract();
-  const { isSuccess, isError } = useWaitForTransactionReceipt({
-    hash: txHash,
-    chainId: QDAY.chainId,
-  });
+  const publicClient = usePublicClient({ chainId: QDAY.chainId });
+  const { writeContractAsync } = useWriteContract();
+  const [txHash, setTxHash] = useState<Hex | null>(null);
+  const [progress, setProgress] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [verifiedOnChain, setVerifiedOnChain] = useState(false);
 
   const [stage, setStage] = useState<Stage>("compose");
   const [recipient, setRecipient] = useState("");
@@ -64,11 +68,20 @@ export function NewPaymentFlow() {
     balanceBaseUnits: wallet.tokenBalance?.value.toString() ?? null,
   });
 
+  // A pasted request must be fully verified before paying. Clear it to pay without protection.
+  const requestPasted = requestRaw.trim().length > 0;
+  const requestVerified =
+    verification.status === "VERIFIED_PAYMENT_REQUEST" && !!verification.request;
+  const settlementReady = !!SETTLEMENT_ADDRESS && isAddress(SETTLEMENT_ADDRESS);
+  /** Protected = the settlement contract re-verifies the recipient's signature on-chain. */
+  const protectedPath = requestVerified && settlementReady;
+
   const canReview =
     !!verification.recipient &&
     !!amountBase &&
     wallet.isConnected &&
-    verification.risk.recommendation !== "DO_NOT_PROCEED";
+    verification.risk.recommendation !== "DO_NOT_PROCEED" &&
+    (!requestPasted || protectedPath);
 
   const balanceSufficient =
     wallet.tokenBalance && amountBase
@@ -94,51 +107,133 @@ export function NewPaymentFlow() {
     setStage("review");
   };
 
-  const pay = () => {
-    if (!verification.recipient || !amountBase) return;
-    setStage("submitting");
-    writeContract(
-      {
-        address: TUSD8.address,
-        abi: erc20Abi,
-        functionName: "transfer",
-        args: [verification.recipient, BigInt(amountBase)],
-        chainId: QDAY.chainId,
-      },
-      {
-        onSuccess: (hash) => {
-          if (paymentId) updatePaymentRecord(paymentId, { txHash: hash });
-          setStage("confirming");
-        },
-        onError: () => setStage("failed"),
-      },
-    );
+  const stageText = (st: SettleStage): string => {
+    switch (st) {
+      case "checking":
+        return "Checking the request with the settlement contract…";
+      case "approving":
+        return `Approve exactly ${amountBase ? formatUnits(BigInt(amountBase), TUSD8.decimals) : ""} ${TUSD8.symbol} in your wallet (step 1 of 2)…`;
+      case "approval-confirming":
+        return "Confirming approval on QDay Aevum…";
+      case "settling":
+        return "Authorize the payment in your wallet (step 2 of 2)…";
+      case "confirming":
+        return "Confirming payment on QDay Aevum…";
+    }
   };
 
-  // Track receipt outcome.
-  const [receiptHandled, setReceiptHandled] = useState(false);
-  useEffect(() => {
-    if (stage !== "confirming" || (!isSuccess && !isError) || receiptHandled) return;
-    const id = paymentId;
-    const succeeded = isSuccess;
-    // Defer state updates out of the synchronous effect body.
-    const t = setTimeout(() => {
-      setReceiptHandled(true);
-      if (id) {
-        updatePaymentRecord(id, {
-          kind: succeeded ? "confirmed" : "failed",
-          confirmedAt: Date.now(),
+  const pay = async () => {
+    if (!publicClient || !wallet.address || !verification.recipient || !amountBase) return;
+    const payer = wallet.address as Address;
+    setErrorMsg(null);
+    setTxHash(null);
+    setVerifiedOnChain(false);
+    setStage("submitting");
+    setProgress("Preparing…");
+    try {
+      if (protectedPath && verification.request) {
+        // Contract-enforced path: PayGuardSettlement re-verifies the recipient's signature.
+        const settlement = SETTLEMENT_ADDRESS as Address;
+        const deps: SettleDeps = {
+          settlement,
+          checkRequest: async (req, signature, who) => {
+            const [status, hash] = await publicClient.readContract({
+              address: settlement,
+              abi: settlementAbi,
+              functionName: "checkRequest",
+              args: [req, signature, who],
+            });
+            return { status, hash };
+          },
+          allowance: (token, owner, spender) =>
+            publicClient.readContract({
+              address: token,
+              abi: erc20Abi,
+              functionName: "allowance",
+              args: [owner, spender],
+            }),
+          approve: (token, spender, amount) =>
+            writeContractAsync({
+              address: token,
+              abi: erc20Abi,
+              functionName: "approve",
+              args: [spender, amount],
+              chainId: QDAY.chainId,
+            }),
+          settle: (req, signature) =>
+            writeContractAsync({
+              address: settlement,
+              abi: settlementAbi,
+              functionName: "settle",
+              args: [req, signature],
+              chainId: QDAY.chainId,
+            }),
+          waitForReceipt: (hash) => publicClient.waitForTransactionReceipt({ hash }),
+        };
+        const result = await settleSignedRequest(deps, verification.request, payer, (st) => {
+          setProgress(stageText(st));
+          setStage(st === "approval-confirming" || st === "confirming" ? "confirming" : "submitting");
         });
+        setTxHash(result.txHash);
+        setVerifiedOnChain(true);
+        if (paymentId) {
+          updatePaymentRecord(paymentId, {
+            kind: "confirmed",
+            txHash: result.txHash,
+            requestHash: result.requestHash,
+            settledVia: "settlement",
+            confirmedAt: Date.now(),
+          });
+        }
+        setStage("done");
+      } else {
+        // Unprotected fallback: plain ERC-20 transfer (no recipient signature to enforce).
+        setProgress("Authorize the transfer in your wallet…");
+        const hash = await writeContractAsync({
+          address: TUSD8.address,
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [verification.recipient, BigInt(amountBase)],
+          chainId: QDAY.chainId,
+        });
+        setTxHash(hash);
+        if (paymentId) updatePaymentRecord(paymentId, { txHash: hash, settledVia: "direct-transfer" });
+        setStage("confirming");
+        setProgress("Confirming transaction on QDay Aevum…");
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        if (receipt.status !== "success") throw new Error("The transfer failed on-chain.");
+        const matched = parseEventLogs({
+          abi: erc20Abi,
+          eventName: "Transfer",
+          logs: receipt.logs,
+        }).some(
+          (l) =>
+            l.address.toLowerCase() === TUSD8.address.toLowerCase() &&
+            l.args.from.toLowerCase() === payer.toLowerCase() &&
+            l.args.to.toLowerCase() === verification.recipient!.toLowerCase() &&
+            l.args.value === BigInt(amountBase),
+        );
+        if (!matched) {
+          throw new Error("No matching Transfer event in the receipt. Do not treat this as paid.");
+        }
+        setVerifiedOnChain(true);
+        if (paymentId) updatePaymentRecord(paymentId, { kind: "confirmed", confirmedAt: Date.now() });
+        setStage("done");
       }
-      setStage(succeeded ? "done" : "failed");
-    }, 0);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSuccess, isError]);
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.name === "SettlementFlowError" ? e.message : explainSettlementError(e),
+      );
+      if (paymentId) updatePaymentRecord(paymentId, { kind: "failed", confirmedAt: Date.now() });
+      setStage("failed");
+    }
+  };
 
   const reset = () => {
-    resetWrite();
-    setReceiptHandled(false);
+    setTxHash(null);
+    setErrorMsg(null);
+    setProgress("");
+    setVerifiedOnChain(false);
     setStage("compose");
     setRecipient("");
     setAmountDisplay("");
@@ -236,7 +331,7 @@ export function NewPaymentFlow() {
                     <Textarea
                       value={requestRaw}
                       onChange={(e) => setRequestRaw(e.target.value)}
-                      placeholder='{"v":1,"recipient":"0x…",…}'
+                      placeholder='{"v":2,"recipient":"0x…",…}'
                       className="min-h-28 font-mono text-xs"
                     />
                   </Field>
@@ -253,7 +348,11 @@ export function NewPaymentFlow() {
                             ? "Enter a valid amount."
                             : verification.risk.recommendation === "DO_NOT_PROCEED"
                               ? "Risk engine recommends not proceeding — see findings."
-                              : "Complete the required fields."}
+                              : requestPasted && requestVerified && !settlementReady
+                                ? "The PayGuardSettlement address is not configured (NEXT_PUBLIC_PAYGUARD_SETTLEMENT)."
+                                : requestPasted && !requestVerified
+                                  ? "The pasted request is not verified. Fix it, or clear the box to pay without protection."
+                                  : "Complete the required fields."}
                       </p>
                     )}
                   </div>
@@ -270,6 +369,19 @@ export function NewPaymentFlow() {
                   <CardDescription>Confirm every detail before authorizing in your wallet.</CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-1 text-sm">
+                  {protectedPath ? (
+                    <p className="mb-2 flex items-start gap-2 rounded-lg border border-verified-500/30 bg-verified-500/10 p-3 text-xs text-verified-400">
+                      <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+                      Protected: the PayGuardSettlement contract re-verifies the recipient&apos;s signature
+                      on-chain and rejects this payment if any signed detail was altered.
+                    </p>
+                  ) : (
+                    <p className="mb-2 flex items-start gap-2 rounded-lg border border-caution-500/30 bg-caution-500/10 p-3 text-xs text-caution-400">
+                      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                      Unprotected: no signed payment request was provided, so this is a plain token transfer
+                      that no contract can check against the recipient&apos;s intent.
+                    </p>
+                  )}
                   <ReviewRow label="From" value={wallet.address ?? ""} mono />
                   <ReviewRow label="To" value={verification.recipient ?? ""} mono />
                   <ReviewRow
@@ -317,7 +429,7 @@ export function NewPaymentFlow() {
               {(stage === "submitting" || stage === "confirming") && (
                 <div className="flex items-center gap-3 text-sm text-slate-300">
                   <Loader2 className="h-4 w-4 animate-spin text-primary-400" />
-                  {stage === "submitting" ? "Waiting for wallet signature…" : "Confirming transaction on QDay Aevum…"}
+                  {progress || (stage === "submitting" ? "Waiting for wallet signature…" : "Confirming transaction on QDay Aevum…")}
                 </div>
               )}
               {stage === "done" && txHash && (
@@ -326,6 +438,13 @@ export function NewPaymentFlow() {
                     <CheckCircle2 className="h-5 w-5" />
                     <span className="font-medium">Payment confirmed</span>
                   </div>
+                  {verifiedOnChain && (
+                    <p className="text-xs text-slate-400">
+                      {protectedPath
+                        ? "Verified on-chain: the PaymentSettled event matches the signed request."
+                        : "Verified on-chain: the Transfer event matches the payment."}
+                    </p>
+                  )}
                   <a
                     href={explorerTxUrl(txHash)}
                     target="_blank"
@@ -341,12 +460,10 @@ export function NewPaymentFlow() {
                 <div className="flex flex-col gap-3">
                   <div className="flex items-center gap-2 text-danger-400">
                     <ShieldAlert className="h-5 w-5" />
-                    <span className="font-medium">{writeError ? "Transaction rejected or failed" : "Transaction failed on-chain"}</span>
+                    <span className="font-medium">Payment not completed</span>
                   </div>
-                  {writeError && (
-                    <p className="text-xs text-slate-500">{writeError.message.slice(0, 200)}</p>
-                  )}
-                  <Button variant="secondary" onClick={() => { resetWrite(); setReceiptHandled(false); setStage("review"); }}>
+                  {errorMsg && <p className="text-sm text-slate-300">{errorMsg}</p>}
+                  <Button variant="secondary" onClick={() => { setErrorMsg(null); setProgress(""); setStage("review"); }}>
                     Try again
                   </Button>
                 </div>

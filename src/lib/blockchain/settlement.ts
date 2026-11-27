@@ -34,6 +34,16 @@ export const SETTLEMENT_STATUS = [
 ] as const;
 export type SettlementStatus = (typeof SETTLEMENT_STATUS)[number];
 
+/** Pre-flight status -> the equivalent revert-error name (keys of SETTLEMENT_ERROR_MESSAGES). */
+export const STATUS_TO_ERROR: Record<Exclude<SettlementStatus, "Ok">, string> = {
+  Expired: "RequestExpired",
+  WrongChain: "WrongChain",
+  WrongPayer: "WrongPayer",
+  InvalidRequest: "InvalidRequest",
+  NonceUsed: "NonceAlreadyUsed",
+  InvalidSignature: "InvalidSignature",
+};
+
 /** Plain-language explanations for every custom error the settlement contract can revert with. */
 export const SETTLEMENT_ERROR_MESSAGES: Record<string, string> = {
   RequestExpired: "This payment request has expired. Ask the recipient for a new one.",

@@ -90,6 +90,10 @@ export interface PaymentRecord {
   reference: string;
   txHash?: string;
   requestNonce?: string;
+  /** EIP-712 digest of the settled request (links the record to the on-chain PaymentSettled event). */
+  requestHash?: string;
+  /** "settlement" = enforced on-chain by PayGuardSettlement; "direct-transfer" = unprotected plain ERC-20 transfer. */
+  settledVia?: "settlement" | "direct-transfer";
   createdAt: number;
   confirmedAt?: number;
 }
