@@ -21,8 +21,9 @@ import { useVerification } from "@/features/verification/useVerification";
 import { VerificationPanel } from "@/features/verification/VerificationPanel";
 import { RiskReport } from "@/features/risk/RiskReport";
 import { erc20Abi, TUSD8 } from "@/lib/blockchain/wagmi";
-import { settlementAbi, explainSettlementError } from "@/lib/blockchain/settlement";
-import { settleSignedRequest, type SettleDeps, type SettleStage } from "@/lib/blockchain/settlePayment";
+import { explainSettlementError } from "@/lib/blockchain/settlement";
+import { settleSignedRequest, type SettleStage } from "@/lib/blockchain/settlePayment";
+import { buildSettleDeps, type WriteContractFn } from "@/lib/blockchain/settleDeps";
 import { QDAY, SETTLEMENT_ADDRESS, explorerTxUrl } from "@/constants/app";
 import { addPaymentRecord, updatePaymentRecord } from "@/lib/storage/local";
 
@@ -134,42 +135,9 @@ export function NewPaymentFlow() {
       if (protectedPath && verification.request) {
         // Contract-enforced path: PayGuardSettlement re-verifies the recipient's signature.
         const settlement = SETTLEMENT_ADDRESS as Address;
-        const deps: SettleDeps = {
-          settlement,
-          checkRequest: async (req, signature, who) => {
-            const [status, hash] = await publicClient.readContract({
-              address: settlement,
-              abi: settlementAbi,
-              functionName: "checkRequest",
-              args: [req, signature, who],
-            });
-            return { status, hash };
-          },
-          allowance: (token, owner, spender) =>
-            publicClient.readContract({
-              address: token,
-              abi: erc20Abi,
-              functionName: "allowance",
-              args: [owner, spender],
-            }),
-          approve: (token, spender, amount) =>
-            writeContractAsync({
-              address: token,
-              abi: erc20Abi,
-              functionName: "approve",
-              args: [spender, amount],
-              chainId: QDAY.chainId,
-            }),
-          settle: (req, signature) =>
-            writeContractAsync({
-              address: settlement,
-              abi: settlementAbi,
-              functionName: "settle",
-              args: [req, signature],
-              chainId: QDAY.chainId,
-            }),
-          waitForReceipt: (hash) => publicClient.waitForTransactionReceipt({ hash }),
-        };
+        const write: WriteContractFn = (a) =>
+          writeContractAsync({ ...a, chainId: QDAY.chainId } as Parameters<typeof writeContractAsync>[0]);
+        const deps = buildSettleDeps(publicClient, write, settlement);
         const result = await settleSignedRequest(deps, verification.request, payer, (st) => {
           setProgress(stageText(st));
           setStage(st === "approval-confirming" || st === "confirming" ? "confirming" : "submitting");

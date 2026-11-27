@@ -29,6 +29,11 @@ export const REGISTRY_ADDRESS = (process.env
 export const SETTLEMENT_ADDRESS = (process.env
   .NEXT_PUBLIC_PAYGUARD_SETTLEMENT ?? "") as `0x${string}` | "";
 
+/** First block to scan for PayGuard events (the deployment block of PayGuardSettlement). */
+export const SETTLEMENT_DEPLOY_BLOCK = BigInt(
+  process.env.NEXT_PUBLIC_PAYGUARD_DEPLOY_BLOCK ?? "4245204",
+);
+
 export function explorerTxUrl(hash: string): string {
   return `${QDAY.explorerUrl}/tx/${hash}`;
 }

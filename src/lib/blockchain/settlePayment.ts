@@ -55,7 +55,7 @@ export class SettlementFlowError extends Error {
 
 const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-function requestData(r: SignedPaymentRequest): PaymentRequestData {
+export function requestData(r: SignedPaymentRequest): PaymentRequestData {
   return {
     recipient: r.recipient,
     payer: r.payer,
@@ -67,6 +67,44 @@ function requestData(r: SignedPaymentRequest): PaymentRequestData {
     expiresAt: r.expiresAt,
     nonce: r.nonce,
   };
+}
+
+/**
+ * Confirm a receipt contains the `PaymentSettled` event for exactly this request.
+ * Throws unless the event exists, comes from the settlement contract, and matches the
+ * expected recipient/payer/token/amount (and agent, when given).
+ */
+export function verifySettledEvent(
+  receipt: ReceiptLike,
+  settlement: Address,
+  requestHash: Hex,
+  expected: { recipient: Address; payer: Address; token: Address; amount: bigint; agent?: Address },
+): void {
+  const events = parseEventLogs({
+    abi: settlementAbi,
+    eventName: "PaymentSettled",
+    logs: receipt.logs as Log[],
+  }).filter((l) => eq(l.address, settlement));
+  const ev = events.find((l) => eq(l.args.requestHash, requestHash));
+  if (!ev) {
+    throw new SettlementFlowError(
+      "NoSettlementEvent",
+      "The transaction succeeded but no matching PaymentSettled event was found. Do not treat it as paid.",
+    );
+  }
+  const a = ev.args;
+  if (
+    !eq(a.recipient, expected.recipient) ||
+    !eq(a.payer, expected.payer) ||
+    !eq(a.token, expected.token) ||
+    a.amount !== expected.amount ||
+    (expected.agent !== undefined && !eq(a.agent, expected.agent))
+  ) {
+    throw new SettlementFlowError(
+      "EventMismatch",
+      "The on-chain payment event does not match the signed request. Do not treat it as paid.",
+    );
+  }
 }
 
 /**
@@ -127,30 +165,12 @@ export async function settleSignedRequest(
     throw new SettlementFlowError("SettleReverted", "The payment transaction failed on-chain.");
   }
 
-  const events = parseEventLogs({
-    abi: settlementAbi,
-    eventName: "PaymentSettled",
-    logs: receipt.logs as Log[],
-  }).filter((l) => eq(l.address, deps.settlement));
-  const ev = events.find((l) => eq(l.args.requestHash, localHash));
-  if (!ev) {
-    throw new SettlementFlowError(
-      "NoSettlementEvent",
-      "The transaction succeeded but no matching PaymentSettled event was found. Do not treat it as paid.",
-    );
-  }
-  const a = ev.args;
-  if (
-    !eq(a.recipient, req.recipient) ||
-    !eq(a.payer, payer) ||
-    !eq(a.token, req.token) ||
-    a.amount !== amount
-  ) {
-    throw new SettlementFlowError(
-      "EventMismatch",
-      "The on-chain payment event does not match the signed request. Do not treat it as paid.",
-    );
-  }
+  verifySettledEvent(receipt, deps.settlement, localHash, {
+    recipient: req.recipient,
+    payer,
+    token: req.token,
+    amount,
+  });
 
   return { txHash, approvalTxHash, requestHash: localHash };
 }
